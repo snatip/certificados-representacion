@@ -562,8 +562,30 @@ function sendCertificates() {
     const emailPlaceholders = detectEmailPlaceholders(emailSubject + ' ' + emailBody);
     let emailMapping = {};
     if (emailPlaceholders.length > 0) {
+      // Show detected placeholders for the user to verify before mapping
+      const placeholderList = emailPlaceholders.map(p => `  • {{${p}}}`).join('\n');
+      const confirmPlaceholders = ui.alert(
+        '✅ Placeholders Detectados en el Email',
+        `Se han encontrado ${emailPlaceholders.length} placeholder(s) en el asunto y cuerpo del email:\n\n` +
+        `${placeholderList}\n\n` +
+        `¿Son correctos? Pulsa OK para continuar asignándolos a columnas,\n` +
+        `o Cancelar para volver a escribir el asunto/cuerpo del email.`,
+        ui.ButtonSet.OK_CANCEL
+      );
+      if (confirmPlaceholders !== ui.Button.OK) return;
+
       emailMapping = mapPlaceholdersToColumns(ui, sheet, emailPlaceholders);
       if (!emailMapping) return;
+    } else {
+      // Warn the user if no placeholders were found at all
+      const confirmNoPlaceholders = ui.alert(
+        '⚠️ Sin Placeholders',
+        'No se han detectado placeholders ({{...}}) en el asunto ni en el cuerpo del email.\n\n' +
+        'El mismo texto se enviará a todos los destinatarios sin personalización.\n\n' +
+        '¿Quieres continuar de todos modos?',
+        ui.ButtonSet.YES_NO
+      );
+      if (confirmNoPlaceholders !== ui.Button.YES) return;
     }
 
     const result = sendCertificateEmails(
@@ -643,8 +665,29 @@ function retryFailedEmails() {
   const emailPlaceholders = detectEmailPlaceholders(emailSubject + ' ' + emailBody);
   let emailMapping = {};
   if (emailPlaceholders.length > 0) {
+    // Show detected placeholders for the user to verify before mapping
+    const placeholderList = emailPlaceholders.map(p => `  • {{${p}}}`).join('\n');
+    const confirmPlaceholders = ui.alert(
+      '✅ Placeholders Detectados en el Email',
+      `Se han encontrado ${emailPlaceholders.length} placeholder(s) en el asunto y cuerpo del email:\n\n` +
+      `${placeholderList}\n\n` +
+      `¿Son correctos? Pulsa OK para continuar asignándolos a columnas,\n` +
+      `o Cancelar para volver a escribir el asunto/cuerpo del email.`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (confirmPlaceholders !== ui.Button.OK) return;
+
     emailMapping = mapPlaceholdersToColumns(ui, mainSheet, emailPlaceholders);
     if (!emailMapping) return;
+  } else {
+    const confirmNoPlaceholders = ui.alert(
+      '⚠️ Sin Placeholders',
+      'No se han detectado placeholders ({{...}}) en el asunto ni en el cuerpo del email.\n\n' +
+      'El mismo texto se enviará a todos los destinatarios sin personalización.\n\n' +
+      '¿Quieres continuar de todos modos?',
+      ui.ButtonSet.YES_NO
+    );
+    if (confirmNoPlaceholders !== ui.Button.YES) return;
   }
 
   // Index files in signed folder
