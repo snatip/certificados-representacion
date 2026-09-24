@@ -19,6 +19,7 @@
  * REQUISITOS:
  * - La hoja debe contener columnas para: Nombre, Apellido(s), Email (mínimo)
  * - Plantilla en Google Docs con placeholders como {{NOMBRE}}, {{APELLIDOS}}, {{EMAIL}}
+ *   (si se sube como Word .docx, el script la convierte automáticamente a Google Docs)
  * - Los PDFs firmados tienen que tener el siguiente nombre: NombreApellido_signed.pdf
  * 
  * ═══════════════════════════════════════════════════════════════════════════
@@ -367,11 +368,22 @@ function identifyCriticalColumnsForGeneration(ui, sheet) {
 /**
  * Prompts user to provide template document
  */
+const GOOGLE_DOC_MIME = 'application/vnd.google-apps.document';
+
+// Template formats that can be automatically converted to Google Docs
+const CONVERTIBLE_TEMPLATE_MIMES = {
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word (.docx)',
+  'application/msword': 'Word (.doc)',
+  'application/vnd.oasis.opendocument.text': 'OpenDocument (.odt)',
+  'application/rtf': 'RTF (.rtf)'
+};
+
 function getTemplateDocument(ui) {
   const response = ui.prompt(
     'Documento Plantilla',
     'Introduce la URL o el ID del Google Docs:\n\n' +
-    '(El ID se encuentra en la URL del Doc: docs.google.com/document/d/DOCUMENT_ID/edit)',
+    '(El ID se encuentra en la URL del Doc: docs.google.com/document/d/DOCUMENT_ID/edit)\n\n' +
+    'Si la plantilla es un Word (.docx) subido a Drive, se convertirá automáticamente a Google Docs.',
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -380,12 +392,72 @@ function getTemplateDocument(ui) {
   const input = response.getResponseText().trim();
   const docId = extractDocumentId(input);
 
+  let file;
   try {
-    return DocumentApp.openById(docId);
+    file = DriveApp.getFileById(docId);
   } catch (error) {
     ui.alert('Error', 'No se pudo abrir el documento. Comprueba la URL/ID y los permisos.', ui.ButtonSet.OK);
     return null;
   }
+
+  const mimeType = file.getMimeType();
+
+  if (mimeType === GOOGLE_DOC_MIME) {
+    try {
+      return DocumentApp.openById(docId);
+    } catch (error) {
+      ui.alert('Error', 'No se pudo abrir el documento. Comprueba la URL/ID y los permisos.', ui.ButtonSet.OK);
+      return null;
+    }
+  }
+
+  if (!CONVERTIBLE_TEMPLATE_MIMES[mimeType]) {
+    ui.alert('Error',
+      `El archivo "${file.getName()}" no es un documento de Google Docs ni un formato convertible (tipo: ${mimeType}).\n\n` +
+      'Usa un Google Docs o un Word (.docx).',
+      ui.ButtonSet.OK);
+    return null;
+  }
+
+  try {
+    const convertedDoc = convertToGoogleDoc(file);
+    ui.alert('Plantilla Convertida',
+      `La plantilla "${file.getName()}" es un archivo ${CONVERTIBLE_TEMPLATE_MIMES[mimeType]} y se ha convertido automáticamente a Google Docs.\n\n` +
+      `Documento convertido: "${convertedDoc.getName()}"\n${convertedDoc.getUrl()}\n\n` +
+      'Revisa que el formato se haya mantenido bien. La próxima vez puedes usar directamente este documento.',
+      ui.ButtonSet.OK);
+    return convertedDoc;
+  } catch (error) {
+    Logger.log('Error converting template: ' + error.toString());
+    ui.alert('Error',
+      `No se pudo convertir "${file.getName()}" a Google Docs: ${error.message}\n\n` +
+      'Ábrelo en Drive y usa «Archivo > Guardar como documento de Google», y después introduce la URL del nuevo documento.',
+      ui.ButtonSet.OK);
+    return null;
+  }
+}
+
+/**
+ * Creates a Google Docs copy of a Word/ODT/RTF file (in the same folder) and returns it opened.
+ */
+function convertToGoogleDoc(file) {
+  const url = `https://www.googleapis.com/drive/v3/files/${file.getId()}/copy?supportsAllDrives=true`;
+  const name = file.getName().replace(/\.(docx?|odt|rtf)$/i, '') + ' (Google Docs)';
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ name: name, mimeType: GOOGLE_DOC_MIME }),
+    headers: { 'Authorization': 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`Drive API respondió ${response.getResponseCode()}: ${response.getContentText()}`);
+  }
+
+  const newId = JSON.parse(response.getContentText()).id;
+  return DocumentApp.openById(newId);
 }
 
 function extractDocumentId(input) {
@@ -1023,6 +1095,7 @@ SISTEMA DE CERTIFICADOS - INSTRUCCIONES
 📋 PREPARACIÓN
 1. Prepara tu hoja de cálculo con columnas: Nombre, Apellidos, Email (como mínimo)
 2. Crea una plantilla de Google Docs con placeholders: {{NAME}}, {{SURNAME}}, {{EMAIL}}, etc.
+   (si la subes como Word .docx se convertirá automáticamente a Google Docs)
 3. Crea una carpeta de Google Drive para almacenar los certificados
 
 📄 FASE 1: GENERAR CERTIFICADOS
