@@ -21,6 +21,8 @@
  * - Plantilla en Google Docs con placeholders como {{NOMBRE}}, {{APELLIDOS}}, {{EMAIL}}
  *   (si se sube como Word .docx, el script la convierte automáticamente a Google Docs)
  * - Los PDFs firmados tienen que tener el siguiente nombre: NombreApellido_signed.pdf
+ * - Si una persona tiene varios certificados (varias filas), los PDFs se numeran por orden:
+ *   NombreApellido.pdf, NombreApellido_2.pdf, ... -> NombreApellido_2_signed.pdf
  * 
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -196,6 +198,12 @@ function generateCertificates() {
       `PDFs guardados en:\n${unsignedFolder.getName()}\n\n` +
       `URL de la carpeta:\n${unsignedFolder.getUrl()}`;
 
+    if (result.duplicatedPeople > 0) {
+      message += `\n\nℹ️ ${result.duplicatedPeople} persona(s) tienen más de un certificado. ` +
+                 `Sus PDFs se han numerado según el orden de las filas: NombreApellidos.pdf, NombreApellidos_2.pdf, ...\n` +
+                 `Al firmarlos, mantén ese número: NombreApellidos_2_signed.pdf`;
+    }
+
     if (result.failed > 0) {
       message += `\n\n⚠️ Se han registrado ${result.failed} error(es) en la hoja "${ERROR_SHEET_NAME}".\n` +
                  `Revísala para identificar y corregir los certificados fallidos.`;
@@ -266,6 +274,7 @@ function retryFailedCertificates() {
 
   // Only process the failed rows
   const allData = mainSheet.getDataRange().getValues();
+  const baseNames = buildBaseFilenames(allData, criticalColumns).names;
   let success = 0;
   let stillFailing = 0;
   const newErrors = [];
@@ -278,9 +287,7 @@ function retryFailedCertificates() {
         replacements[placeholder] = rowData[colIndex] || '';
       }
 
-      const name    = rowData[criticalColumns.nameCol]    || 'Unknown';
-      const surname = rowData[criticalColumns.surnameCol] || 'Unknown';
-      const filename = `${name}${surname}.pdf`.replace(/\s+/g, '');
+      const filename = `${baseNames[pending.originalDataRow]}.pdf`;
 
       const personalizedDoc = createPersonalizedDocument(templateDoc, replacements);
       const pdfBlob = convertDocToPdf(personalizedDoc);
@@ -527,6 +534,29 @@ function extractFolderId(input) {
   return urlMatch ? urlMatch[1] : input;
 }
 
+/**
+ * Builds the base PDF filename (without extension) for every data row.
+ * When the same person appears in several rows (more than one certificate),
+ * the first keeps "NombreApellidos" and the next ones get "_2", "_3", ...
+ * Numbering depends only on row order, so generation, sending and retries agree.
+ * Returns { names: string[] (indexed like data), duplicatedPeople: number }
+ */
+function buildBaseFilenames(data, criticalColumns) {
+  const counts = {};
+  const names = [''];   // header row
+
+  for (let i = 1; i < data.length; i++) {
+    const name    = data[i][criticalColumns.nameCol]    || 'Unknown';
+    const surname = data[i][criticalColumns.surnameCol] || 'Unknown';
+    const base = `${name}${surname}`.replace(/\s+/g, '');
+    counts[base] = (counts[base] || 0) + 1;
+    names.push(counts[base] > 1 ? `${base}_${counts[base]}` : base);
+  }
+
+  const duplicatedPeople = Object.values(counts).filter(c => c > 1).length;
+  return { names, duplicatedPeople };
+}
+
 function getOrCreateFolder(parentFolder, folderName) {
   const folders = parentFolder.getFoldersByName(folderName);
   if (folders.hasNext()) return folders.next();
@@ -539,6 +569,7 @@ function getOrCreateFolder(parentFolder, folderName) {
  */
 function generateCertificatePDFs(sheet, templateDoc, columnMapping, outputFolder, criticalColumns) {
   const data = sheet.getDataRange().getValues();
+  const { names: baseNames, duplicatedPeople } = buildBaseFilenames(data, criticalColumns);
   let successCount = 0;
   let failedCount = 0;
   const errors = [];
@@ -547,7 +578,7 @@ function generateCertificatePDFs(sheet, templateDoc, columnMapping, outputFolder
     const rowData = data[i];
     const name    = rowData[criticalColumns.nameCol]    || 'Unknown';
     const surname = rowData[criticalColumns.surnameCol] || 'Unknown';
-    const filename = `${name}${surname}.pdf`.replace(/\s+/g, '');
+    const filename = `${baseNames[i]}.pdf`;
 
     try {
       const replacements = {};
@@ -578,7 +609,7 @@ function generateCertificatePDFs(sheet, templateDoc, columnMapping, outputFolder
     }
   }
 
-  return { success: successCount, failed: failedCount, errors };
+  return { success: successCount, failed: failedCount, duplicatedPeople, errors };
 }
 
 function createPersonalizedDocument(templateDoc, replacements) {
@@ -771,6 +802,7 @@ function retryFailedEmails() {
   }
 
   const allData = mainSheet.getDataRange().getValues();
+  const baseNames = buildBaseFilenames(allData, criticalColumns).names;
   let success = 0;
   let stillFailing = 0;
   const newErrors = [];
@@ -780,7 +812,7 @@ function retryFailedEmails() {
     const email   = rowData[criticalColumns.emailCol];
     const name    = rowData[criticalColumns.nameCol];
     const surname = rowData[criticalColumns.surnameCol];
-    const filename = `${name}${surname}_signed.pdf`.replace(/\s+/g, '');
+    const filename = `${baseNames[pending.originalDataRow]}_signed.pdf`;
 
     try {
       if (!email) throw new Error('Dirección de email vacía');
@@ -900,7 +932,8 @@ function getSignedFolder(ui) {
   const response = ui.prompt(
     'Carpeta de Certificados Firmados',
     'Introduce la URL o ID de la Carpeta de Google Drive que contiene los PDFs firmados:\n\n' +
-    '(Los archivos deben tener el nombre: NombreApellidos_signed.pdf)',
+    '(Los archivos deben tener el nombre: NombreApellidos_signed.pdf,\n' +
+    ' o NombreApellidos_2_signed.pdf, _3_signed.pdf... si una persona tiene varios certificados)',
     ui.ButtonSet.OK_CANCEL
   );
   if (response.getSelectedButton() !== ui.Button.OK) return null;
@@ -1001,12 +1034,14 @@ function sendCertificateEmails(sheet, signedFolder, subject, body, placeholderMa
     files[file.getName()] = file;
   }
 
+  const baseNames = buildBaseFilenames(data, criticalColumns).names;
+
   for (let i = 1; i < data.length; i++) {
     const rowData = data[i];
     const email   = rowData[criticalColumns.emailCol];
     const name    = rowData[criticalColumns.nameCol];
     const surname = rowData[criticalColumns.surnameCol];
-    const filename = `${name}${surname}_signed.pdf`.replace(/\s+/g, '');
+    const filename = `${baseNames[i]}_signed.pdf`;
 
     // --- Missing email ---
     if (!email) {
@@ -1129,6 +1164,9 @@ SISTEMA DE CERTIFICADOS - INSTRUCCIONES
 💡 CONSEJOS
 • Los placeholders distinguen entre mayúsculas y minúsculas
 • El nombre del PDF firmado debe ser exacto: NombreApellido_signed.pdf
+• Varios certificados por persona: se numeran por orden de fila
+  (NombreApellido.pdf, NombreApellido_2.pdf...). Firmados: NombreApellido_2_signed.pdf
+  No reordenes las filas entre la generación y el envío
 • Límite de Gmail: ~1500 emails/día
 • Prueba primero con 1-2 filas antes de procesar todas
 
